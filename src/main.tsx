@@ -1,18 +1,20 @@
 import '@vly-ai/integrations';
 import { Toaster } from "@/components/ui/sonner";
 import { RequireAuth } from "@/components/RequireAuth";
+import { BackendProvider, convexUrl, hasBackend } from "@/lib/backend";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import { ConvexAuthProvider } from "@convex-dev/auth/react";
 import { ConvexReactClient } from "convex/react";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Route, Routes, useLocation } from "react-router";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
 import "./index.css";
 
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
+const Tool = lazy(() => import("./pages/Tool.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
 // Simple loading fallback for route transitions
@@ -80,7 +82,9 @@ class RootErrorBoundary extends React.Component<
   }
 }
 
-const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string);
+/* The Convex client is only constructed when a deployment URL exists, so the
+   same bundle can be dropped on any static host without a backend. */
+const convex = convexUrl ? new ConvexReactClient(convexUrl) : null;
 
 
 
@@ -107,6 +111,57 @@ function RouteSyncer() {
   return null;
 }
 
+/**
+ * `/tool` is the public workbench and exists in both modes. Accounts, history
+ * and the feedback panels only exist when a backend is connected.
+ */
+function RouteTree() {
+  return (
+    <Routes>
+      <Route path="/" element={<Landing />} />
+      <Route path="/tool" element={<Tool />} />
+      {hasBackend ? (
+        <>
+          <Route
+            path="/auth"
+            element={<AuthPage redirectAfterAuth="/dashboard" />}
+          />
+          <Route
+            path="/dashboard"
+            element={
+              <RequireAuth
+                title="Sign in to open your workspace"
+                description="Your dump history, saved exports and owner messages live here."
+              >
+                <Dashboard />
+              </RequireAuth>
+            }
+          />
+        </>
+      ) : (
+        <>
+          <Route path="/auth" element={<Navigate to="/tool" replace />} />
+          <Route path="/dashboard" element={<Navigate to="/tool" replace />} />
+        </>
+      )}
+      <Route path="*" element={<NotFound />} />
+    </Routes>
+  );
+}
+
+function App() {
+  return (
+    <BackendProvider>
+      <BrowserRouter>
+        <RouteSyncer />
+        <Suspense fallback={<RouteLoading />}>
+          <RouteTree />
+        </Suspense>
+      </BrowserRouter>
+      <Toaster />
+    </BackendProvider>
+  );
+}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -114,30 +169,13 @@ createRoot(document.getElementById("root")!).render(
       <ToolbarErrorBoundary>
         <VlyToolbar />
       </ToolbarErrorBoundary>
-      <ConvexAuthProvider client={convex}>
-        <BrowserRouter>
-          <RouteSyncer />
-          <Suspense fallback={<RouteLoading />}>
-            <Routes>
-              <Route path="/" element={<Landing />} />
-              <Route
-                path="/auth"
-                element={<AuthPage redirectAfterAuth="/dashboard" />}
-              />
-              <Route
-                path="/dashboard"
-                element={
-                  <RequireAuth>
-                    <Dashboard />
-                  </RequireAuth>
-                }
-              />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </Suspense>
-        </BrowserRouter>
-        <Toaster />
-      </ConvexAuthProvider>
+      {convex ? (
+        <ConvexAuthProvider client={convex}>
+          <App />
+        </ConvexAuthProvider>
+      ) : (
+        <App />
+      )}
     </RootErrorBoundary>
   </StrictMode>,
 );

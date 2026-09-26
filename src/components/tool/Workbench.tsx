@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { api } from "@/convex/_generated/api";
+import { useAuth } from "@/hooks/use-auth";
+import { ALERTS_UNAVAILABLE, useNotify } from "@/lib/backend";
 import { cn } from "@/lib/utils";
 import {
   EXPORT_FORMATS,
@@ -24,7 +25,6 @@ import {
   type ExportFormat,
   type ParsedLib,
 } from "@/lib/libreader";
-import { useAction } from "convex/react";
 import {
   Binary,
   Boxes,
@@ -45,6 +45,7 @@ import {
   TerminalSquare,
   Trash2,
   Wand2,
+  WifiOff,
 } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
@@ -78,7 +79,8 @@ export function Workbench({
   autoFeedback,
   onAutoFeedbackChange,
 }: WorkbenchProps) {
-  const notify = useAction(api.telegram.notifyOwner);
+  const notify = useNotify();
+  const { hasBackend } = useAuth();
 
   const [lib, setLib] = useState<ParsedLib | null>(null);
   const [fileName, setFileName] = useState("");
@@ -112,11 +114,12 @@ export function Workbench({
     kind: "scan" | "download" | "patch" | "signature" | "install",
     extra: Record<string, unknown> = {},
   ) => {
-    if (!autoFeedback) return;
+    if (!autoFeedback || !hasBackend) return;
     try {
-      await notify({
+      const result = await notify({
         kind,
-        userName,
+        userName: userName || undefined,
+        userEmail: userEmail || undefined,
         fileName: fileName || undefined,
         fileSize: fileSize || undefined,
         format: lib?.format,
@@ -126,6 +129,9 @@ export function Workbench({
         sectionCount: lib?.sections.length,
         ...extra,
       });
+      if (!result.ok && result.error !== ALERTS_UNAVAILABLE) {
+        console.warn("[LUCKY HUB] owner alert failed:", result.error);
+      }
     } catch (error) {
       console.warn("[LUCKY HUB] owner alert failed:", error);
     }
@@ -197,7 +203,9 @@ export function Workbench({
         await new Promise((resolve) => setTimeout(resolve, 450));
       }
       toast.success("Full dump downloaded — every format", {
-        description: "Check your downloads folder. The owner has been notified.",
+        description: hasBackend
+          ? "Check your downloads folder. The owner has been notified."
+          : "Check your downloads folder.",
       });
       void send(kind, { downloadKind: "ALL FORMATS", note: "one-click full dump" });
     } finally {
@@ -766,11 +774,18 @@ export function Workbench({
                 />
                 <ToggleRow label="Sections" checked={includeSections} onChange={setIncludeSections} />
                 <ToggleRow label="Symbol table" checked={includeSymbols} onChange={setIncludeSymbols} />
-                <ToggleRow
-                  label="Auto-send feedback to the owner"
-                  checked={autoFeedback}
-                  onChange={onAutoFeedbackChange}
-                />
+                {hasBackend ? (
+                  <ToggleRow
+                    label="Auto-send feedback to the owner"
+                    checked={autoFeedback}
+                    onChange={onAutoFeedbackChange}
+                  />
+                ) : (
+                  <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <WifiOff className="size-3.5 text-primary" />
+                    Owner alerts unlock once a backend is connected
+                  </span>
+                )}
               </div>
 
               <div className="flex flex-wrap gap-2">

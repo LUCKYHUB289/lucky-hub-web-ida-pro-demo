@@ -12,6 +12,7 @@ import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import { OWNER_NAME, TELEGRAM_CHANNEL, TOOL_NAME } from "@/lib/libreader";
+import { readAutoFeedback, writeAutoFeedback } from "@/lib/prefs";
 import { useAction, useQuery } from "convex/react";
 import {
   BookOpen,
@@ -40,19 +41,11 @@ const NAV: { id: Section; label: string; icon: typeof TerminalSquare; hint: stri
   { id: "guide", label: "Field guide", icon: BookOpen, hint: "How the toolkit works" },
 ];
 
-const AUTO_FEEDBACK_KEY = "luckyhub.autoFeedback";
-
-function readAutoFeedback(): boolean {
-  try {
-    const raw = window.localStorage.getItem(AUTO_FEEDBACK_KEY);
-    return raw === null ? true : raw === "true";
-  } catch {
-    return true;
-  }
-}
+/** Panels that need a connected backend. */
+const BACKEND_ONLY: Section[] = ["feedback", "history"];
 
 export default function Dashboard() {
-  const { user, signOut } = useAuth();
+  const { user, signOut, hasBackend } = useAuth();
   const navigate = useNavigate();
   const [section, setSection] = useState<Section>("workbench");
   const [navOpen, setNavOpen] = useState(false);
@@ -63,11 +56,7 @@ export default function Dashboard() {
 
   const setAuto = (value: boolean) => {
     setAutoFeedback(value);
-    try {
-      window.localStorage.setItem(AUTO_FEEDBACK_KEY, String(value));
-    } catch {
-      /* storage disabled — preference simply won't persist */
-    }
+    writeAutoFeedback(value);
     toast(value ? "Auto feedback is on" : "Auto feedback is off", {
       description: value
         ? "The owner gets a Telegram alert on every dump."
@@ -85,9 +74,11 @@ export default function Dashboard() {
     setNavOpen(false);
   };
 
+  const items = NAV.filter((item) => hasBackend || !BACKEND_ONLY.includes(item.id));
+
   const nav = (
     <nav className="flex flex-col gap-1">
-      {NAV.map((item) => (
+      {items.map((item) => (
         <button
           key={item.id}
           onClick={() => go(item.id)}

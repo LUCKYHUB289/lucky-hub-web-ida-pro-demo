@@ -96,11 +96,16 @@ function Section({
 }
 
 export default function Landing() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, hasBackend } = useAuth();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const enter = () => navigate(isAuthenticated ? "/dashboard" : "/auth?returnTo=/dashboard");
+  /** Signed in → workspace. Backend available → sign-in. Otherwise → public tool. */
+  const enter = () => {
+    if (isAuthenticated) return navigate("/dashboard");
+    if (hasBackend) return navigate("/auth?returnTo=/dashboard");
+    return navigate("/tool");
+  };
   const ctaLabel = isAuthenticated ? "Dashboard" : "Open the workbench";
 
   const links = [
@@ -215,11 +220,9 @@ export default function Landing() {
                 <TerminalSquare />
                 {ctaLabel}
               </Button>
-              <Button asChild size="lg" variant="outline">
-                <a href="#toolkit">
-                  <Sparkles />
-                  See the toolkit
-                </a>
+              <Button size="lg" variant="outline" onClick={() => navigate("/tool")}>
+                <Sparkles />
+                Try it — no account
               </Button>
             </div>
 
@@ -344,18 +347,22 @@ export default function Landing() {
               <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-primary">
                 the export bench
               </p>
-              <h2 className="mt-3 font-display text-3xl font-bold tracking-tight">
-                Everything in the lib,{" "}
-                <span className="text-gold">one click to download</span>
-              </h2>
-              <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                Press the button and every format is written to your machine in sequence — each file
-                stamped with the tool name, the owner and your account details so your dumps are always
-                traceable.
-              </p>
-              <Button size="lg" className="mt-6" onClick={enter} disabled={false}>
+            <h2 className="mt-3 font-display text-3xl font-bold tracking-tight">
+              Everything in the lib,{" "}
+              <span className="text-gold">one click to download</span>
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              Press the button and every format is written to your machine in sequence — each file
+              stamped with the tool name, the owner and your account details so your dumps are always
+              traceable.
+            </p>
+            <p className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground">
+              <ShieldCheck className="size-3.5 text-primary" />
+              Works with no install and no account — drop the build on any website and it runs.
+            </p>
+              <Button size="lg" className="mt-6" onClick={() => navigate("/tool")}>
                 <Download />
-                {isAuthenticated ? "Open the workbench" : "Get access free"}
+                Open the workbench
               </Button>
             </div>
 

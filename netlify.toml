@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Single-page-app fallback: every unknown path serves index.html so client-side
+# routing (/tool, /dashboard, ...) works on refresh and on deep links.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

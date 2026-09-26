@@ -17,6 +17,26 @@
     rel="stylesheet"
   />
   <title>LUCKY HUB WEB IDA PRO</title>
+  <script>
+    /*
+     * Static-host SPA fallback support. Hosts without rewrite rules
+     * (GitHub Pages, S3, plain nginx) serve /404.html for unknown paths, which
+     * stashes the requested route here. Restore it before React Router boots so
+     * deep links and refreshes land on the right page.
+     */
+    (function () {
+      try {
+        var key = "luckyhub:spa-restore";
+        var saved = sessionStorage.getItem(key);
+        if (saved && saved.charAt(0) === "/") {
+          sessionStorage.removeItem(key);
+          window.history.replaceState(null, "", saved);
+        }
+      } catch (e) {
+        /* storage unavailable — deep links fall back to the home page */
+      }
+    })();
+  </script>
 </head>
 
 
