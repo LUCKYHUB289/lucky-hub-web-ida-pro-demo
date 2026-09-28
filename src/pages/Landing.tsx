@@ -1,7 +1,6 @@
 import logo from "@/assets/logo.svg";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@/hooks/use-auth";
 import { EXPORT_FORMATS, OWNER_NAME, TELEGRAM_CHANNEL, TOOL_NAME } from "@/lib/libreader";
 import { motion } from "framer-motion";
 import {
@@ -11,6 +10,7 @@ import {
   Download,
   FileCode2,
   Fingerprint,
+  Image as ImageIcon,
   Layers,
   Menu,
   Search,
@@ -70,6 +70,11 @@ const FEATURES = [
     title: "Lite disassembler inside",
     body: "arm64 control flow, movz/movk, adrp, add/sub and load/store decode natively, with addresses and raw bytes beside every line.",
   },
+  {
+    icon: ImageIcon,
+    title: "Image → .h converter",
+    body: "Ships a second tool: drop a logo or sprite and export a linkable C header as RGB565, RGB888, ARGB8888 or 8-bit grayscale for embedded displays.",
+  },
 ];
 
 const STEPS = [
@@ -96,17 +101,12 @@ function Section({
 }
 
 export default function Landing() {
-  const { isAuthenticated, hasBackend } = useAuth();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
 
-  /** Signed in → workspace. Backend available → sign-in. Otherwise → public tool. */
-  const enter = () => {
-    if (isAuthenticated) return navigate("/dashboard");
-    if (hasBackend) return navigate("/auth?returnTo=/dashboard");
-    return navigate("/tool");
-  };
-  const ctaLabel = isAuthenticated ? "Dashboard" : "Open the workbench";
+  /** No accounts anywhere — every CTA opens the workspace directly. */
+  const enter = () => navigate("/dashboard");
+  const ctaLabel = "Open the workspace";
 
   const links = [
     { href: "#features", label: "Features" },
@@ -150,9 +150,6 @@ export default function Landing() {
                 <Send />
                 {TELEGRAM_CHANNEL}
               </a>
-            </Button>
-            <Button size="sm" onClick={enter}>
-              {ctaLabel}
             </Button>
             <Button
               variant="ghost"
@@ -220,14 +217,14 @@ export default function Landing() {
                 <TerminalSquare />
                 {ctaLabel}
               </Button>
-              <Button size="lg" variant="outline" onClick={() => navigate("/tool")}>
-                <Sparkles />
-                Try it — no account
+              <Button size="lg" variant="outline" onClick={() => navigate("/image-to-header")}>
+                <ImageIcon />
+                Image tool
               </Button>
             </div>
 
             <div className="mt-6 flex flex-wrap gap-x-5 gap-y-2 text-[11px] text-muted-foreground">
-              {["100% offline parsing", "No upload, no queue", "Auto feedback to the owner"].map((t) => (
+              {["100% offline parsing", "No upload, no queue", "Six-format one-click dump"].map((t) => (
                 <span key={t} className="flex items-center gap-1.5">
                   <ShieldCheck className="size-3.5 text-primary" />
                   {t}
@@ -283,7 +280,7 @@ export default function Landing() {
             <div className="mt-3 flex items-center gap-2 rounded-lg border border-gold-soft bg-primary/10 px-3 py-2">
               <Download className="size-4 shrink-0 text-primary" />
               <span className="truncate text-xs">
-                Full dump exported · 6 formats · owner notified
+                Full dump exported · 6 formats · zero uploads
               </span>
             </div>
           </motion.div>
@@ -353,7 +350,7 @@ export default function Landing() {
             </h2>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
               Press the button and every format is written to your machine in sequence — each file
-              stamped with the tool name, the owner and your account details so your dumps are always
+              stamped with the tool name, the owner and your session details so your dumps are always
               traceable.
             </p>
             <p className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground">
@@ -427,13 +424,12 @@ export default function Landing() {
             </div>
 
             <h2 className="mt-6 font-display text-2xl font-bold tracking-tight">
-              Built-in auto feedback to the owner
+              A direct line to the owner
             </h2>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              Every time someone analyses a lib, downloads a dump, patches a binary or forges a
-              signature, the tool quietly reports it back to the owner's Telegram bot — who used it,
-              which lib, which format, when. Users can also send a message and a rating straight from
-              the dashboard.
+              Nothing is reported behind your back — the tool never phones home while you work. When you
+              want to reach out, send a rating and a note from the dashboard, or open the direct line and
+              chat with the owner through their Telegram bot. Your lib never leaves your machine.
             </p>
 
             <div className="mt-5 flex flex-wrap gap-2">
@@ -460,19 +456,19 @@ export default function Landing() {
             <div className="mt-3 space-y-3 font-mono text-[11px] leading-5">
               <div>
                 <p className="text-muted-foreground/70">LUCKY HUB WEB IDA PRO</p>
-                <p className="text-primary">⬇️ One-click dump downloaded</p>
+                <p className="text-primary">💬 Feedback from a user</p>
               </div>
               <div className="space-y-1 rounded-lg border border-border/50 bg-card/50 p-3">
                 <p>👤 User: lucky_operator</p>
+                <p>⭐ Rating: 5/5</p>
                 <p>📦 Lib: LuckyHub.dylib</p>
                 <p>⚙️ Arch: arm64 (64-bit)</p>
-                <p>🔖 Symbols: 18,204</p>
-                <p>📁 Export: ALL FORMATS</p>
+                <p>📝 Note: “Cleanest offset dump I've used.”</p>
                 <p className="text-accent">🕒 delivered</p>
               </div>
               <div>
-                <p className="text-primary">💬 Feedback from a user</p>
-                <p className="text-foreground/85">⭐ 5/5 · “Cleanest offset dump I've used.”</p>
+                <p className="text-primary">📨 Direct message</p>
+                <p className="text-foreground/85">“Can you add fat-binary splits?” · reply lands back here</p>
               </div>
             </div>
           </div>
@@ -488,7 +484,7 @@ export default function Landing() {
               Your next lib is <span className="text-gold">ten seconds</span> from fully mapped
             </h2>
             <p className="mx-auto mt-4 max-w-xl text-sm leading-6 text-muted-foreground">
-              Sign in with just an email, drop the file, and take the whole offset dump with you.
+              Drop the file and take the whole offset dump with you — no account, no upload, no waiting.
             </p>
             <div className="mt-7 flex flex-wrap justify-center gap-3">
               <Button size="lg" onClick={enter} className="gold-glow">

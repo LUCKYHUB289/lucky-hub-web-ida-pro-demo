@@ -2,32 +2,18 @@ import logo from "@/assets/logo.svg";
 import { Workbench } from "@/components/tool/Workbench";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@/hooks/use-auth";
+import { hasBackend } from "@/lib/backend";
 import { OWNER_NAME, TELEGRAM_CHANNEL, TOOL_NAME } from "@/lib/libreader";
-import { readAutoFeedback, writeAutoFeedback } from "@/lib/prefs";
-import { Crown, LayoutDashboard, LogIn, Send, WifiOff } from "lucide-react";
-import { useState } from "react";
+import { CAPTURE_ELEMENT_ID } from "@/lib/screenshot";
+import { Crown, Image as ImageIcon, LayoutDashboard, Send, WifiOff } from "lucide-react";
 import { useNavigate } from "react-router";
-import { toast } from "sonner";
 
 /**
- * The public workbench. Reachable directly at /tool on any deployment — it does
- * not require an account, and works even when no backend is configured.
+ * The public workbench. Reachable directly at /tool on any deployment — no
+ * account is ever required, and it works even when no backend is configured.
  */
 export default function Tool() {
-  const { user, isAuthenticated, hasBackend } = useAuth();
   const navigate = useNavigate();
-  const [autoFeedback, setAutoFeedback] = useState(readAutoFeedback);
-
-  const setAuto = (value: boolean) => {
-    setAutoFeedback(value);
-    writeAutoFeedback(value);
-    toast(value ? "Auto feedback is on" : "Auto feedback is off", {
-      description: value
-        ? "The owner gets a Telegram alert on every dump."
-        : "Only messages you send manually will reach the owner.",
-    });
-  };
 
   return (
     <div className="min-h-screen bg-background bg-radial-gold">
@@ -62,22 +48,19 @@ export default function Tool() {
                 {TELEGRAM_CHANNEL}
               </a>
             </Button>
-            {isAuthenticated ? (
-              <Button size="sm" onClick={() => navigate("/dashboard")}>
-                <LayoutDashboard />
-                Workspace
-              </Button>
-            ) : hasBackend ? (
-              <Button size="sm" onClick={() => navigate("/auth?returnTo=/dashboard")}>
-                <LogIn />
-                Sign in
-              </Button>
-            ) : null}
+            <Button variant="outline" size="sm" onClick={() => navigate("/image-to-header")}>
+              <ImageIcon />
+              Image tool
+            </Button>
+            <Button size="sm" onClick={() => navigate("/dashboard")}>
+              <LayoutDashboard />
+              Workspace
+            </Button>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-[1400px] px-4 py-5 sm:px-6 sm:py-7">
+      <main id={CAPTURE_ELEMENT_ID} className="mx-auto w-full max-w-[1400px] px-4 py-5 sm:px-6 sm:py-7">
         <div className="mb-5 flex flex-col gap-3 rounded-xl border border-gold-soft bg-gradient-to-br from-primary/10 via-card to-card p-4 sm:p-5">
           <div className="flex flex-wrap items-center gap-2">
             <Crown className="size-4 text-primary" />
@@ -85,22 +68,17 @@ export default function Tool() {
               Lib reader · offset dumper · byte editor
             </p>
             <Badge variant="secondary" className="ml-auto font-mono text-[10px]">
-              {isAuthenticated ? "signed in" : "public access"}
+              public access
             </Badge>
           </div>
           <p className="max-w-3xl text-xs leading-5 text-muted-foreground">
             {hasBackend
-              ? "Drop a lib and everything is parsed locally in your browser. One click exports every format and alerts the owner."
+              ? "Drop a lib and everything is parsed locally in your browser. One click exports every format."
               : "Drop a lib and everything is parsed locally in your browser. One click exports every format — no account, no upload, no backend required."}
           </p>
         </div>
 
-        <Workbench
-          userName={user?.name ?? user?.email?.split("@")[0] ?? ""}
-          userEmail={user?.email ?? ""}
-          autoFeedback={hasBackend && autoFeedback}
-          onAutoFeedbackChange={setAuto}
-        />
+        <Workbench userName="guest" userEmail="" />
       </main>
 
       <footer className="border-t border-border/60 px-6 py-5 text-center">

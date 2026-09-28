@@ -4,88 +4,59 @@
  * The workbench is a fully client-side tool, so the app is built to run in two
  * modes from the exact same bundle:
  *
- *   connected   — VITE_CONVEX_URL is set: accounts, dump history, feedback and
- *                 Telegram owner alerts are enabled.
+ *   connected   — VITE_CONVEX_URL is set: feedback you send, direct messages,
+ *                 dump history and community stats are enabled.
  *   standalone  — no backend configured: every feature of the lib reader works,
- *                 accounts/history/alerts quietly degrade to no-ops.
+ *                 feedback/history quietly degrade to no-ops.
  *
- * That is what makes the build droppable on any static host. `hasBackend` and
- * `convexUrl` are module constants, so the provider tree never changes shape at
- * runtime and hook order stays stable.
+ * There is no account system: every visitor uses the tool anonymously.
+ * `hasBackend` and `convexUrl` are module constants, so the provider tree never
+ * changes shape at runtime and hook order stays stable.
  */
 
-import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@/convex/_generated/api";
-import { useAction, useConvexAuth, useQuery } from "convex/react";
-import { createContext, useCallback, useContext, type ReactNode } from "react";
+import { useAction, useConvex } from "convex/react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 
 export const convexUrl = import.meta.env.VITE_CONVEX_URL as string | undefined;
 export const hasBackend = Boolean(convexUrl);
 
 /* ------------------------------------------------------------------ *
- * Auth
+ * Backend reachability
+ *
+ * `hasBackend` only says a URL was baked into the build — it does not mean
+ * the deployment answers. A configured-but-dead deployment would quietly
+ * swallow every message, so we probe it once and report the truth.
  * ------------------------------------------------------------------ */
 
-export interface AuthUser {
-  name: string | null;
-  email: string | null;
+const PROBE_TIMEOUT_MS = 8000;
+
+export type BackendState = "standalone" | "checking" | "online" | "offline";
+
+export interface BackendStatus {
+  state: BackendState;
+  /** Why the deployment could not be reached (only set while offline). */
+  error: string | null;
 }
 
-/** Exactly the signature Convex Auth exposes, so both modes stay interchangeable. */
-export type SignInFn = ReturnType<typeof useAuthActions>["signIn"];
-export type SignOutFn = ReturnType<typeof useAuthActions>["signOut"];
+const STANDALONE_STATUS: BackendStatus = { state: "standalone", error: null };
 
-export interface AuthValue {
-  isLoading: boolean;
-  isAuthenticated: boolean;
-  user: AuthUser | null;
-  signIn: SignInFn;
-  signOut: SignOutFn;
-  hasBackend: boolean;
-}
+const BackendStatusContext = createContext<BackendStatus>(STANDALONE_STATUS);
 
-const unavailableSignIn: SignInFn = async (provider) => {
-  throw new Error(
-    `This build has no backend connected, so "${provider}" sign-in is unavailable.`,
-  );
-};
-
-const noopSignOut: SignOutFn = async () => {};
-
-const offlineAuth: AuthValue = {
-  isLoading: false,
-  isAuthenticated: false,
-  user: null,
-  signIn: unavailableSignIn,
-  signOut: noopSignOut,
-  hasBackend: false,
-};
-
-const AuthContext = createContext<AuthValue>(offlineAuth);
-
-export function useAuth() {
-  return useContext(AuthContext);
-}
-
-function ConnectedAuth({ children }: { children: ReactNode }) {
-  const { isLoading, isAuthenticated } = useConvexAuth();
-  const user = useQuery(api.users.currentUser);
-  const { signIn, signOut } = useAuthActions();
-
-  const value: AuthValue = {
-    isLoading: isLoading || user === undefined,
-    isAuthenticated,
-    user: user ? { name: user.name ?? null, email: user.email ?? null } : null,
-    signIn,
-    signOut,
-    hasBackend: true,
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+/** Real reachability of the configured Convex deployment. */
+export function useBackendStatus(): BackendStatus {
+  return useContext(BackendStatusContext);
 }
 
 /* ------------------------------------------------------------------ *
- * Owner alerts
+ * Messages to the owner
  * ------------------------------------------------------------------ */
 
 export interface NotifyArgs {
@@ -104,16 +75,22 @@ export interface NotifyArgs {
   screen?: string;
   userName?: string;
   userEmail?: string;
+  visitorId?: string;
+  /** `data:image/jpeg;base64,…` — attached to the Telegram message. */
+  screenshot?: string;
+  screenshotWidth?: number;
+  screenshotHeight?: number;
 }
 
 export interface NotifyResult {
   ok: boolean;
   error: string | null;
+  screenshotSent?: boolean;
 }
 
 export type NotifyFn = (args: NotifyArgs) => Promise<NotifyResult>;
 
-export const ALERTS_UNAVAILABLE = "owner-alerts-unavailable";
+export const ALERTS_UNAVAILABLE = "owner-messages-unavailable";
 
 const offlineNotify: NotifyFn = async () => ({ ok: false, error: ALERTS_UNAVAILABLE });
 
@@ -130,7 +107,11 @@ function ConnectedNotify({ children }: { children: ReactNode }) {
     async (args) => {
       try {
         const result = await action(args);
-        return { ok: Boolean(result?.ok), error: result?.error ?? null };
+        return {
+          ok: Boolean(result?.ok),
+          error: result?.error ?? null,
+          screenshotSent: Boolean(result?.screenshotSent),
+        };
       } catch (error) {
         return {
           ok: false,
@@ -148,11 +129,50 @@ function ConnectedNotify({ children }: { children: ReactNode }) {
  * Root provider
  * ------------------------------------------------------------------ */
 
+function BackendStatusProvider({ children }: { children: ReactNode }) {
+  const client = useConvex();
+  const [status, setStatus] = useState<BackendStatus>({ state: "checking", error: null });
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${convexUrl} did not answer within ${PROBE_TIMEOUT_MS / 1000}s`)),
+        PROBE_TIMEOUT_MS,
+      );
+    });
+
+    Promise.race([client.query(api.toolData.ping, {}), timeout])
+      .then(() => {
+        if (!cancelled) setStatus({ state: "online", error: null });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setStatus({
+          state: "offline",
+          error: error instanceof Error ? error.message : "The Convex deployment is unreachable",
+        });
+      })
+      .finally(() => {
+        if (timer) clearTimeout(timer);
+      });
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [client]);
+
+  return <BackendStatusContext.Provider value={status}>{children}</BackendStatusContext.Provider>;
+}
+
 export function BackendProvider({ children }: { children: ReactNode }) {
   if (!hasBackend) return <>{children}</>;
   return (
-    <ConnectedAuth>
+    <BackendStatusProvider>
       <ConnectedNotify>{children}</ConnectedNotify>
-    </ConnectedAuth>
+    </BackendStatusProvider>
   );
 }

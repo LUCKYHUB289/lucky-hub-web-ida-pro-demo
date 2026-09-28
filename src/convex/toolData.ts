@@ -17,6 +17,7 @@ const dumpArgs = {
   downloadKind: v.optional(v.string()),
   note: v.optional(v.string()),
   telegramOk: v.optional(v.boolean()),
+  visitorId: v.optional(v.string()),
 };
 
 /** Logged whenever a lib is scanned, exported, patched or signed. */
@@ -38,6 +39,7 @@ export const recordDump = internalMutation({
       downloadKind: args.downloadKind,
       note: args.note,
       telegramOk: args.telegramOk,
+      visitorId: args.visitorId,
     });
   },
 });
@@ -51,6 +53,10 @@ export const recordFeedback = internalMutation({
     toolAction: v.optional(v.string()),
     rating: v.optional(v.number()),
     message: v.string(),
+    hasScreenshot: v.optional(v.boolean()),
+    screenshotWidth: v.optional(v.number()),
+    screenshotHeight: v.optional(v.number()),
+    visitorId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("feedback", {
@@ -62,6 +68,10 @@ export const recordFeedback = internalMutation({
       rating: args.rating,
       message: args.message,
       delivered: false,
+      hasScreenshot: args.hasScreenshot,
+      screenshotWidth: args.screenshotWidth,
+      screenshotHeight: args.screenshotHeight,
+      visitorId: args.visitorId,
     });
   },
 });
@@ -110,6 +120,34 @@ export const myFeedback = query({
       .order("desc")
       .take(limit);
   },
+});
+
+/**
+ * Everything one browser has done. There are no accounts, so the anonymous
+ * visitor id stored in localStorage is what scopes this list.
+ */
+export const dumpsForVisitor = query({
+  args: { visitorId: v.string(), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const visitorId = args.visitorId.trim();
+    if (!visitorId) return [];
+    const limit = Math.min(Math.max(args.limit ?? 40, 1), 200);
+    return await ctx.db
+      .query("dumps")
+      .withIndex("by_visitor", (q) => q.eq("visitorId", visitorId))
+      .order("desc")
+      .take(limit);
+  },
+});
+
+/**
+ * Cheap reachability probe. The client calls this once on load to tell a
+ * deployment that is merely configured apart from one that actually answers,
+ * so the UI can say why nothing can be delivered to the owner.
+ */
+export const ping = query({
+  args: {},
+  handler: async () => ({ ok: true, at: Date.now() }),
 });
 
 export const communityStats = query({

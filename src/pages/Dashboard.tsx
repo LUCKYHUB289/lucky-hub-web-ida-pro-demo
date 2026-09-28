@@ -1,4 +1,6 @@
 import logo from "@/assets/logo.svg";
+import { BackendRequired } from "@/components/tool/BackendRequired";
+import { DmPanel } from "@/components/tool/DmPanel";
 import { Workbench } from "@/components/tool/Workbench";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -6,67 +8,63 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/convex/_generated/api";
-import { useAuth } from "@/hooks/use-auth";
+import { hasBackend, useBackendStatus, type BackendStatus } from "@/lib/backend";
 import { cn } from "@/lib/utils";
 import { OWNER_NAME, TELEGRAM_CHANNEL, TOOL_NAME } from "@/lib/libreader";
-import { readAutoFeedback, writeAutoFeedback } from "@/lib/prefs";
+import { readAutoScreenshot, readVisitorId, writeAutoScreenshot } from "@/lib/prefs";
+import { CAPTURE_ELEMENT_ID, captureScreenshot } from "@/lib/screenshot";
 import { useAction, useQuery } from "convex/react";
 import {
   BookOpen,
+  Camera,
   Crown,
   History,
   Loader2,
-  LogOut,
   Menu,
+  MessageCircle,
   MessageSquare,
   Send,
+  ShieldCheck,
   Sparkles,
   Star,
   TerminalSquare,
+  WifiOff,
 } from "lucide-react";
-import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
-type Section = "workbench" | "feedback" | "history" | "owner" | "guide";
+type Section = "workbench" | "feedback" | "dm" | "history" | "owner" | "guide";
 
 const NAV: { id: Section; label: string; icon: typeof TerminalSquare; hint: string }[] = [
   { id: "workbench", label: "Workbench", icon: TerminalSquare, hint: "Read, edit and dump" },
-  { id: "feedback", label: "Feedback", icon: MessageSquare, hint: "Talk to the owner" },
-  { id: "history", label: "History", icon: History, hint: "Your past libs" },
-  { id: "owner", label: "Owner & channel", icon: Crown, hint: "Telegram alerts" },
+  { id: "feedback", label: "Feedback", icon: MessageSquare, hint: "Rate the tool" },
+  { id: "dm", label: "Direct message", icon: MessageCircle, hint: "Two-way chat with the owner" },
+  { id: "history", label: "History", icon: History, hint: "Recent libs" },
+  { id: "owner", label: "Owner & channel", icon: Crown, hint: "Telegram channel" },
   { id: "guide", label: "Field guide", icon: BookOpen, hint: "How the toolkit works" },
 ];
 
-/** Panels that need a connected backend. */
-const BACKEND_ONLY: Section[] = ["feedback", "history"];
 
 export default function Dashboard() {
-  const { user, signOut, hasBackend } = useAuth();
-  const navigate = useNavigate();
   const [section, setSection] = useState<Section>("workbench");
   const [navOpen, setNavOpen] = useState(false);
-  const [autoFeedback, setAutoFeedback] = useState(readAutoFeedback);
+  const [autoScreenshot, setAutoScreenshot] = useState(readAutoScreenshot);
+  const backend = useBackendStatus();
 
-  const userName = user?.name ?? user?.email?.split("@")[0] ?? "operator";
-  const userEmail = user?.email ?? "";
+  /* No account system: every visitor works as an anonymous guest. */
+  const userName = "guest";
+  const userEmail = "";
 
-  const setAuto = (value: boolean) => {
-    setAutoFeedback(value);
-    writeAutoFeedback(value);
-    toast(value ? "Auto feedback is on" : "Auto feedback is off", {
+  const setShots = (value: boolean) => {
+    setAutoScreenshot(value);
+    writeAutoScreenshot(value);
+    toast(value ? "Screenshots attached" : "Screenshots disabled", {
       description: value
-        ? "The owner gets a Telegram alert on every dump."
-        : "Only messages you send manually will reach the owner.",
+        ? "Reports and direct messages now carry a picture."
+        : "Reports are text-only again.",
     });
-  };
-
-  const handleSignOut = async () => {
-    await signOut();
-    navigate("/");
   };
 
   const go = (next: Section) => {
@@ -74,7 +72,9 @@ export default function Dashboard() {
     setNavOpen(false);
   };
 
-  const items = NAV.filter((item) => hasBackend || !BACKEND_ONLY.includes(item.id));
+  /* Every section is always listed; backend-powered ones explain themselves
+     when no deployment is attached (see BackendRequired). */
+  const items = NAV;
 
   const nav = (
     <nav className="flex flex-col gap-1">
@@ -115,14 +115,16 @@ export default function Dashboard() {
           <div className="flex-1 overflow-y-auto p-3">{nav}</div>
           <div className="border-t border-sidebar-border p-3">
             <div className="rounded-lg border border-border/60 bg-card/50 p-3">
-              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">signed in</p>
-              <p className="truncate text-sm">{userName}</p>
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">session</p>
+              <p className="truncate text-sm">Anonymous access</p>
               <p className="truncate font-mono text-[10px] text-muted-foreground">
-                {userEmail || "guest session"}
+                No sign-in required
               </p>
-              <Button variant="outline" size="sm" className="mt-2 w-full" onClick={handleSignOut}>
-                <LogOut />
-                Sign out
+              <Button asChild variant="outline" size="sm" className="mt-2 w-full">
+                <a href="https://t.me/LUCKY_HUB_DEV" target="_blank" rel="noopener noreferrer">
+                  <Send />
+                  {TELEGRAM_CHANNEL}
+                </a>
               </Button>
             </div>
           </div>
@@ -155,31 +157,49 @@ export default function Dashboard() {
               </p>
             </div>
 
-            <Badge variant="outline" className="hidden font-mono text-[10px] sm:inline-flex">
-              <Sparkles className="size-3 text-primary" />
-              {autoFeedback ? "auto-feedback ON" : "auto-feedback OFF"}
+            <Badge
+              variant="outline"
+              className={cn(
+                "hidden font-mono text-[10px] sm:inline-flex",
+                backend.state === "offline" && "border-destructive/60 text-destructive",
+              )}
+            >
+              {backend.state === "online" ? (
+                <Sparkles className="size-3 text-primary" />
+              ) : (
+                <WifiOff className="size-3" />
+              )}
+              {backend.state === "offline"
+                ? "backend unreachable"
+                : backend.state === "checking"
+                  ? "checking backend…"
+                  : backend.state === "standalone"
+                    ? "standalone build"
+                    : "owner channel online"}
             </Badge>
-            <Button variant="outline" size="icon" className="lg:hidden" onClick={handleSignOut} aria-label="Sign out">
-              <LogOut />
-            </Button>
           </header>
 
-          <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-7">
+          <main id={CAPTURE_ELEMENT_ID} className="min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-7">
             {section === "workbench" && (
-              <Workbench
-                userName={userName}
-                userEmail={userEmail}
-                autoFeedback={autoFeedback}
-                onAutoFeedbackChange={setAuto}
-              />
+              <Workbench userName={userName} userEmail={userEmail} />
             )}
             {section === "feedback" && (
-              <FeedbackPanel userName={userName} userEmail={userEmail} />
+              <FeedbackPanel
+                userName={userName}
+                userEmail={userEmail}
+                autoScreenshot={autoScreenshot}
+                onAutoScreenshotChange={setShots}
+              />
+            )}
+            {section === "dm" && (
+              <DmPanel
+                userName={userName}
+                autoScreenshot={autoScreenshot}
+                onAutoScreenshotChange={setShots}
+              />
             )}
             {section === "history" && <HistoryPanel />}
-            {section === "owner" && (
-              <OwnerPanel autoFeedback={autoFeedback} onAutoFeedbackChange={setAuto} />
-            )}
+            {section === "owner" && <OwnerPanel backend={backend} />}
             {section === "guide" && <GuidePanel />}
           </main>
 
@@ -206,7 +226,34 @@ export default function Dashboard() {
  * Feedback
  * ------------------------------------------------------------------ */
 
-function FeedbackPanel({ userName, userEmail }: { userName: string; userEmail: string }) {
+function FeedbackPanel(props: {
+  userName: string;
+  userEmail: string;
+  autoScreenshot: boolean;
+  onAutoScreenshotChange: (value: boolean) => void;
+}) {
+  if (!hasBackend) {
+    return (
+      <BackendRequired
+        feature="Feedback to the owner"
+        detail="Feedback is stored in Convex and pushed to the owner's Telegram bot, so it needs a connected deployment. The workbench, exports and the image tool all keep working offline."
+      />
+    );
+  }
+  return <FeedbackPanelInner {...props} />;
+}
+
+function FeedbackPanelInner({
+  userName,
+  userEmail,
+  autoScreenshot,
+  onAutoScreenshotChange,
+}: {
+  userName: string;
+  userEmail: string;
+  autoScreenshot: boolean;
+  onAutoScreenshotChange: (value: boolean) => void;
+}) {
   const notify = useAction(api.telegram.notifyOwner);
   const [rating, setRating] = useState(5);
   const [message, setMessage] = useState("");
@@ -221,17 +268,32 @@ function FeedbackPanel({ userName, userEmail }: { userName: string; userEmail: s
     setSending(true);
     setLastError(null);
     try {
+      let shot: { screenshot?: string; screenshotWidth?: number; screenshotHeight?: number } = {};
+      if (autoScreenshot) {
+        const captured = await captureScreenshot(document.getElementById(CAPTURE_ELEMENT_ID));
+        if (captured) {
+          shot = {
+            screenshot: captured.dataUrl,
+            screenshotWidth: captured.width,
+            screenshotHeight: captured.height,
+          };
+        }
+      }
       const result = await notify({
         kind: "feedback",
         message: message.trim(),
         rating,
         userName,
         userEmail,
+        visitorId: readVisitorId(),
         screen: "Feedback panel",
+        ...shot,
       });
       if (result?.ok) {
         toast.success("Feedback delivered to the owner", {
-          description: "LUCKY HATHUNGO WALA just got your Telegram alert.",
+          description: shot.screenshot
+            ? "Screenshot attached to the message."
+            : "LUCKY HATHUNGO WALA just got your message on Telegram.",
         });
         setMessage("");
       } else {
@@ -249,10 +311,8 @@ function FeedbackPanel({ userName, userEmail }: { userName: string; userEmail: s
     }
   };
 
-  const mine = useQuery(api.toolData.myFeedback, { limit: 10 });
-
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
+    <div className="mx-auto w-full max-w-2xl">
       <Card className="border-gold-soft shadow-none">
         <CardHeader>
           <CardTitle className="font-display text-lg">Send feedback to the owner</CardTitle>
@@ -300,44 +360,23 @@ function FeedbackPanel({ userName, userEmail }: { userName: string; userEmail: s
             {sending ? <Loader2 className="animate-spin" /> : <Send />}
             Send straight to the owner
           </Button>
+
+          <label className="flex cursor-pointer items-center gap-2 text-[11px] text-muted-foreground">
+            <input
+              type="checkbox"
+              className="size-3.5 cursor-pointer accent-current"
+              checked={autoScreenshot}
+              onChange={(e) => onAutoScreenshotChange(e.target.checked)}
+            />
+            <Camera className="size-3.5 text-primary" />
+            attach a screenshot of this page
+          </label>
+
           <p className="text-[11px] leading-5 text-muted-foreground">
             Sending as {userName}
             {userEmail ? ` (${userEmail})` : ""}. Your message is stored with the delivery status so the
             owner can read it even if Telegram hiccups.
           </p>
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/70 shadow-none">
-        <CardHeader>
-          <CardTitle className="font-display text-lg">Your recent messages</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {mine === undefined ? (
-            <Loader2 className="size-4 animate-spin text-muted-foreground" />
-          ) : mine.length === 0 ? (
-            <p className="text-xs text-muted-foreground">Nothing sent yet.</p>
-          ) : (
-            mine.map((f) => (
-              <div key={f._id} className="rounded-lg border border-border/60 bg-card/40 p-3">
-                <div className="flex items-center gap-2">
-                  {typeof f.rating === "number" && (
-                    <span className="font-mono text-xs text-primary">{f.rating}/5</span>
-                  )}
-                  <Badge variant={f.delivered ? "default" : "destructive"} className="text-[10px]">
-                    {f.delivered ? "delivered" : "not delivered"}
-                  </Badge>
-                  <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-                    {new Date(f._creationTime).toLocaleString()}
-                  </span>
-                </div>
-                <p className="mt-2 text-xs leading-5 text-foreground/90">{f.message}</p>
-                {f.telegramError && (
-                  <p className="mt-1 font-mono text-[10px] text-destructive">{f.telegramError}</p>
-                )}
-              </div>
-            ))
-          )}
         </CardContent>
       </Card>
     </div>
@@ -349,8 +388,21 @@ function FeedbackPanel({ userName, userEmail }: { userName: string; userEmail: s
  * ------------------------------------------------------------------ */
 
 function HistoryPanel() {
-  const dumps = useQuery(api.toolData.myDumps, { limit: 40 });
+  if (!hasBackend) {
+    return (
+      <BackendRequired
+        feature="History & community stats"
+        detail="History is recorded server-side whenever you report a lib to the owner, so it needs a connected deployment. Nothing about the local workbench depends on it."
+      />
+    );
+  }
+  return <HistoryPanelInner />;
+}
+
+function HistoryPanelInner() {
   const stats = useQuery(api.toolData.communityStats);
+  const visitorId = useMemo(() => readVisitorId(), []);
+  const mine = useQuery(api.toolData.dumpsForVisitor, { visitorId, limit: 40 });
 
   const ACTION_LABEL: Record<string, string> = {
     scan: "Analysed",
@@ -366,7 +418,7 @@ function HistoryPanel() {
           { label: "Libs analysed", value: stats?.scans ?? 0 },
           { label: "One-click dumps", value: stats?.downloads ?? 0 },
           { label: "Patched exports", value: stats?.patches ?? 0 },
-          { label: "Owner alerts sent", value: stats?.deliveredToOwner ?? 0 },
+          { label: "Reports delivered", value: stats?.deliveredToOwner ?? 0 },
         ].map((s) => (
           <div key={s.label} className="rounded-lg border border-border/70 bg-card/50 p-3">
             <p className="text-[11px] uppercase tracking-wider text-muted-foreground">{s.label}</p>
@@ -375,19 +427,20 @@ function HistoryPanel() {
         ))}
       </div>
 
-      <Card className="border-border/70 shadow-none">
+      <Card className="border-gold-soft shadow-none">
         <CardHeader>
           <CardTitle className="font-display text-lg">Your libs</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {dumps === undefined ? (
+          {mine === undefined ? (
             <Loader2 className="size-4 animate-spin text-muted-foreground" />
-          ) : dumps.length === 0 ? (
+          ) : mine.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              Nothing here yet — open a lib in the workbench and it will show up.
+              Nothing tracked yet — libs show up here once they are reported to the owner from this
+              browser.
             </p>
           ) : (
-            dumps.map((d) => (
+            mine.map((d) => (
               <div
                 key={d._id}
                 className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2"
@@ -402,6 +455,39 @@ function HistoryPanel() {
                 </span>
                 <span className="font-mono text-[10px] text-muted-foreground/70">
                   {new Date(d._creationTime).toLocaleString()}
+                </span>
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/70 shadow-none">
+        <CardHeader>
+          <CardTitle className="font-display text-lg">Recent libs (everyone)</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {stats === undefined ? (
+            <Loader2 className="size-4 animate-spin text-muted-foreground" />
+          ) : stats.recent.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Nothing here yet — open a lib in the workbench and it will show up.
+            </p>
+          ) : (
+            stats.recent.map((d) => (
+              <div
+                key={`${d.fileName}-${d.at}`}
+                className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2"
+              >
+                <Badge variant="outline" className="font-mono text-[10px]">
+                  {ACTION_LABEL[d.action] ?? d.action}
+                </Badge>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs">{d.fileName}</span>
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  {d.format} · {d.arch} · {d.symbolCount.toLocaleString()} sym
+                </span>
+                <span className="font-mono text-[10px] text-muted-foreground/70">
+                  {new Date(d.at).toLocaleString()}
                 </span>
               </div>
             ))
@@ -436,31 +522,54 @@ function HistoryPanel() {
  * Owner
  * ------------------------------------------------------------------ */
 
-function OwnerPanel({
-  autoFeedback,
-  onAutoFeedbackChange,
-}: {
-  autoFeedback: boolean;
-  onAutoFeedbackChange: (v: boolean) => void;
-}) {
+function OwnerPanel({ backend }: { backend: BackendStatus }) {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <Card className="border-gold-soft shadow-none">
         <CardHeader>
-          <CardTitle className="font-display text-lg">Auto feedback to Telegram</CardTitle>
+          <CardTitle className="font-display text-lg">Owner channel status</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs leading-5 text-muted-foreground">
-            While this is on, the tool silently pings the owner's Telegram bot every time you analyse a
-            lib, download a dump, patch a binary or generate signatures. Your message, rating and account
-            are attached.
+            Nothing is sent to the owner on its own — the tool never reports your activity behind your
+            back. Only what you submit yourself (feedback from the panel above, and direct messages) is
+            delivered to the owner's Telegram bot by the Convex backend.
           </p>
-          <label className="flex items-center gap-3 rounded-lg border border-border/60 bg-card/40 p-3">
-            <Switch checked={autoFeedback} onCheckedChange={onAutoFeedbackChange} />
-            <span className="text-sm">
-              {autoFeedback ? "Alerts are live" : "Alerts are paused"}
-            </span>
-          </label>
+
+          {/* The panel is not the whole truth — say whether the deployment is
+              actually answering. */}
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-background/40 px-3 py-2 text-[11px]">
+            {backend.state === "online" ? (
+              <>
+                <ShieldCheck className="size-3.5 text-primary" />
+                <span className="text-muted-foreground">
+                  Backend online — feedback and direct messages are delivered to {TELEGRAM_CHANNEL}.
+                </span>
+              </>
+            ) : backend.state === "checking" ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin text-primary" />
+                <span className="text-muted-foreground">Checking the Convex deployment…</span>
+              </>
+            ) : backend.state === "standalone" ? (
+              <>
+                <WifiOff className="size-3.5 text-muted-foreground" />
+                <span className="text-muted-foreground">
+                  Standalone build — no backend is configured, so only the local workbench is active.
+                </span>
+              </>
+            ) : (
+              <>
+                <WifiOff className="size-3.5 text-destructive" />
+                <span className="text-destructive">
+                  The Convex deployment is unreachable, so nothing can be delivered to the owner.
+                </span>
+                {backend.error && (
+                  <span className="font-mono text-[10px] text-destructive/80">{backend.error}</span>
+                )}
+              </>
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -481,7 +590,7 @@ function OwnerPanel({
           </Button>
           <p className="text-[11px] leading-5 text-muted-foreground">
             Delivery runs from the Convex backend. The bot token and owner chat id are read from the
-            environment with safe defaults, so alerts work out of the box.
+            environment with safe defaults, so feedback and direct messages work out of the box.
           </p>
         </CardContent>
       </Card>
@@ -517,7 +626,7 @@ const GUIDE_STEPS = [
   },
   {
     title: "4 · Dump everything",
-    body: "One click writes every format: IDA listing, JSON, C/C++ header, .idc script, AOB signatures and a CSV offset table — each stamped with your account details.",
+    body: "One click writes every format: IDA listing, JSON, C/C++ header, .idc script, AOB signatures and a CSV offset table — each stamped with your session details.",
   },
 ];
 

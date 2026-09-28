@@ -51,9 +51,12 @@ const schema = defineSchema(
       downloadKind: v.optional(v.string()),
       note: v.optional(v.string()),
       telegramOk: v.optional(v.boolean()),
+      // anonymous browser id — there are no accounts
+      visitorId: v.optional(v.string()),
     })
       .index("by_user", ["userId"])
-      .index("by_action", ["action"]),
+      .index("by_action", ["action"])
+      .index("by_visitor", ["visitorId"]),
 
     // feedback pushed to the owner's Telegram bot
     feedback: defineTable({
@@ -66,9 +69,32 @@ const schema = defineSchema(
       message: v.string(),
       delivered: v.boolean(),
       telegramError: v.optional(v.string()),
+      // the screenshot itself is only ever streamed to Telegram, never stored
+      hasScreenshot: v.optional(v.boolean()),
+      screenshotWidth: v.optional(v.number()),
+      screenshotHeight: v.optional(v.number()),
+      visitorId: v.optional(v.string()),
     })
       .index("by_user", ["userId"])
-      .index("by_delivered", ["delivered"]),
+      .index("by_delivered", ["delivered"])
+      .index("by_visitor", ["visitorId"]),
+
+    // direct messages between a visitor and the owner's Telegram bot
+    dmMessages: defineTable({
+      threadId: v.string(),
+      // user = visitor → owner, owner = owner's Telegram reply → visitor
+      direction: v.union(v.literal("user"), v.literal("owner")),
+      author: v.string(),
+      text: v.string(),
+      // for user messages: id of the relay copy shown to the owner in Telegram
+      // for owner messages: id of the reply in Telegram
+      telegramMessageId: v.optional(v.number()),
+      delivered: v.optional(v.boolean()),
+      telegramError: v.optional(v.string()),
+      hasScreenshot: v.optional(v.boolean()),
+    })
+      .index("by_thread", ["threadId"])
+      .index("by_telegram_message", ["telegramMessageId"]),
   },
   {
     schemaValidation: false,

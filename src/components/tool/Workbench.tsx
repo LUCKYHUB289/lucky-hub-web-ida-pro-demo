@@ -5,16 +5,23 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useAuth } from "@/hooks/use-auth";
-import { ALERTS_UNAVAILABLE, useNotify } from "@/lib/backend";
+import { hasBackend, useNotify } from "@/lib/backend";
+import { readVisitorId } from "@/lib/prefs";
+import { CAPTURE_ELEMENT_ID, captureScreenshot } from "@/lib/screenshot";
 import { cn } from "@/lib/utils";
 import {
   EXPORT_FORMATS,
   applyPatches,
   bytesToHexDumpPreview,
+  bytesToHexDumpTail,
+  crc32,
+  entropyOf,
   exportDump,
+  extractStrings,
+  fnv1a32,
   formatBytes,
   hex,
+  hexPad,
   parseLib,
   parsePattern,
   searchPattern,
@@ -29,25 +36,28 @@ import {
   Binary,
   Boxes,
   Braces,
+  Camera,
   Cpu,
   Download,
   FileCode2,
   FileUp,
+  Fingerprint,
   Hammer,
   Hash,
+  Info,
   Layers,
   Loader2,
   PackageOpen,
   Save,
   Search,
+  Send,
   ShieldCheck,
   Sparkles,
   TerminalSquare,
   Trash2,
   Wand2,
-  WifiOff,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { DisasmPanel } from "./DisasmPanel";
 import { HexViewer } from "./HexViewer";
@@ -58,12 +68,10 @@ import { SymbolsPanel } from "./SymbolsPanel";
 interface WorkbenchProps {
   userName: string;
   userEmail: string;
-  autoFeedback: boolean;
-  onAutoFeedbackChange: (value: boolean) => void;
 }
 
 const TAB_ITEMS = [
-  { value: "overview", label: "Overview", icon: Layers },
+  { value: "overview", label: "Lib info", icon: Layers },
   { value: "sections", label: "Sections", icon: PackageOpen },
   { value: "symbols", label: "Symbols", icon: Hash },
   { value: "strings", label: "Strings", icon: Braces },
@@ -73,14 +81,8 @@ const TAB_ITEMS = [
   { value: "export", label: "Export", icon: Download },
 ];
 
-export function Workbench({
-  userName,
-  userEmail,
-  autoFeedback,
-  onAutoFeedbackChange,
-}: WorkbenchProps) {
+export function Workbench({ userName, userEmail }: WorkbenchProps) {
   const notify = useNotify();
-  const { hasBackend } = useAuth();
 
   const [lib, setLib] = useState<ParsedLib | null>(null);
   const [fileName, setFileName] = useState("");
@@ -107,19 +109,83 @@ export function Workbench({
   const [busy, setBusy] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  /* ---------------- deep info analysis (memoised per lib) ---------------- */
+
+  const forensics = useMemo(() => {
+    if (!lib) return null;
+    const bytes = lib.bytes;
+    return {
+      crc: crc32(bytes),
+      fnv: fnv1a32(bytes),
+      entropy: entropyOf(bytes),
+      strings: extractStrings(bytes, { minLength: 4, limit: 4000 }),
+    };
+  }, [lib]);
+
+  const [sha256, setSha256] = useState<string | null>(null);
+  useEffect(() => {
+    if (!lib || typeof crypto === "undefined" || !crypto.subtle) {
+      setSha256(null);
+      return;
+    }
+    let cancelled = false;
+    const bytes = new Uint8Array(lib.bytes);
+    crypto.subtle
+      .digest("SHA-256", bytes)
+      .then((digest) => {
+        if (cancelled) return;
+        setSha256(
+          Array.from(new Uint8Array(digest))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join(""),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setSha256(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [lib]);
 
   /* ---------------- notifications ---------------- */
 
-  const send = async (
-    kind: "scan" | "download" | "patch" | "signature" | "install",
-    extra: Record<string, unknown> = {},
-  ) => {
-    if (!autoFeedback || !hasBackend) return;
+  /** Grabs a screenshot of the capture region, or nothing if it isn't available. */
+  const screenshotPayload = async (): Promise<{
+    screenshot?: string;
+    screenshotWidth?: number;
+    screenshotHeight?: number;
+  }> => {
+    const target = document.getElementById(CAPTURE_ELEMENT_ID) ?? rootRef.current;
+    const shot = await captureScreenshot(target ?? null);
+    if (!shot) return {};
+    return {
+      screenshot: shot.dataUrl,
+      screenshotWidth: shot.width,
+      screenshotHeight: shot.height,
+    };
+  };
+
+  /** Manual report to the owner: always tries to attach a screenshot. */
+  const sendWorkbenchReport = async () => {
+    if (!hasBackend) {
+      toast.error("Reporting needs a connected backend");
+      return;
+    }
+    const shot = await screenshotPayload();
+    const summary = lib
+      ? `${fileName || "unnamed"} · ${lib.format} ${lib.arch} · ${lib.symbols.length} symbols · ${formatBytes(lib.bytes.length)}`
+      : "No lib loaded in the workbench yet.";
     try {
       const result = await notify({
-        kind,
+        kind: "feedback",
+        message: `Quick report sent from the workbench.\n\n${summary}`,
+        screen: "Workbench · quick report",
         userName: userName || undefined,
         userEmail: userEmail || undefined,
+        visitorId: readVisitorId(),
         fileName: fileName || undefined,
         fileSize: fileSize || undefined,
         format: lib?.format,
@@ -127,13 +193,21 @@ export function Workbench({
         bits: lib?.bits,
         symbolCount: lib?.symbols.length,
         sectionCount: lib?.sections.length,
-        ...extra,
+        ...shot,
       });
-      if (!result.ok && result.error !== ALERTS_UNAVAILABLE) {
-        console.warn("[LUCKY HUB] owner alert failed:", result.error);
+      if (result.ok) {
+        toast.success("Report delivered to the owner", {
+          description: shot.screenshot
+            ? `Screenshot attached (${shot.screenshotWidth}×${shot.screenshotHeight}).`
+            : "Sent without a screenshot.",
+        });
+      } else {
+        toast.error("Could not reach the owner", { description: result.error ?? undefined });
       }
     } catch (error) {
-      console.warn("[LUCKY HUB] owner alert failed:", error);
+      toast.error("Could not reach the owner", {
+        description: error instanceof Error ? error.message : "Unknown error",
+      });
     }
   };
 
@@ -159,7 +233,6 @@ export function Workbench({
       toast.success(`${file.name} analysed`, {
         description: `${parsed.format} · ${parsed.arch} · ${parsed.symbols.length.toLocaleString()} symbols · ${parsed.sections.length} sections`,
       });
-      void send("scan", { fileName: file.name, fileSize: file.size, note: "lib opened" });
     } catch (error) {
       toast.error("Could not read that file", {
         description: error instanceof Error ? error.message : "Unknown read error",
@@ -183,19 +256,17 @@ export function Workbench({
       labelOverrides: overrides,
     });
 
-  const download = (fmt: ExportFormat, kind: "download" | "patch" = "download") => {
+  const download = (fmt: ExportFormat) => {
     if (!lib) return;
     const spec = EXPORT_FORMATS.find((f) => f.id === fmt)!;
     const { fileName: outName, content, mime } = buildExport(fmt);
     triggerDownload(outName, content, mime);
     toast.success(`${spec.label} exported`, { description: outName });
-    void send(kind, { downloadKind: spec.label });
   };
 
   const downloadEverything = async () => {
     if (!lib) return;
     setBusy(true);
-    const kind = patches.length > 0 ? "patch" : "download";
     try {
       for (const spec of EXPORT_FORMATS) {
         const { fileName: outName, content, mime } = buildExport(spec.id);
@@ -203,11 +274,8 @@ export function Workbench({
         await new Promise((resolve) => setTimeout(resolve, 450));
       }
       toast.success("Full dump downloaded — every format", {
-        description: hasBackend
-          ? "Check your downloads folder. The owner has been notified."
-          : "Check your downloads folder.",
+        description: "Check your downloads folder.",
       });
-      void send(kind, { downloadKind: "ALL FORMATS", note: "one-click full dump" });
     } finally {
       setBusy(false);
     }
@@ -235,7 +303,6 @@ export function Workbench({
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
     toast.success(`Patched lib written (${result.applied} edit${result.applied === 1 ? "" : "s"})`);
-    void send("patch", { downloadKind: "patched binary", note: `${result.applied} byte edit(s)` });
   };
 
   /* ---------------- patches ---------------- */
@@ -276,7 +343,6 @@ export function Workbench({
     toast.success(
       found.length === 0 ? "No match in this lib" : `${found.length} match(es) found`,
     );
-    void send("signature", { downloadKind: "pattern scan", note: patternInput });
   };
 
   /* ---------------- render ---------------- */
@@ -350,16 +416,28 @@ export function Workbench({
   const stats: { label: string; value: string; icon: typeof Cpu }[] = [
     { label: "Format", value: lib.format, icon: PackageOpen },
     { label: "Architecture", value: `${lib.arch} (${lib.bits}-bit)`, icon: Cpu },
-    { label: "File size", value: formatBytes(lib.bytes.length), icon: Binary },
+    { label: "Endianness", value: lib.endian, icon: Braces },
+    {
+      label: "File size",
+      value: `${formatBytes(lib.bytes.length)} · ${lib.bytes.length.toLocaleString()} B`,
+      icon: Binary,
+    },
     { label: "Entry point", value: hex(lib.entry), icon: Hash },
     { label: "Image base", value: hex(lib.imageBase), icon: Layers },
     { label: "Symbols", value: lib.symbols.length.toLocaleString(), icon: Hash },
     { label: "Sections", value: String(lib.sections.length), icon: PackageOpen },
     { label: "Segments", value: String(lib.segments.length), icon: Boxes },
+    { label: "Imports", value: lib.imports.length.toLocaleString(), icon: Download },
+    { label: "Exports", value: lib.exports.length.toLocaleString(), icon: Sparkles },
+    {
+      label: "Strings ≥ 4",
+      value: forensics ? forensics.strings.length.toLocaleString() : "…",
+      icon: Search,
+    },
   ];
 
   return (
-    <div className="flex flex-col gap-4">
+    <div ref={rootRef} className="flex flex-col gap-4">
       {/* action bar */}
       <div className="flex flex-col gap-3 rounded-lg border border-gold-soft bg-gradient-to-br from-primary/10 via-card to-card p-4 lg:flex-row lg:items-center">
         <div className="min-w-0 flex-1">
@@ -388,6 +466,20 @@ export function Workbench({
               e.target.value = "";
             }}
           />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!hasBackend}
+            onClick={() => void sendWorkbenchReport()}
+            title={
+              hasBackend
+                ? "Send this lib to the owner with a screenshot"
+                : "Connect a backend to reach the owner"
+            }
+          >
+            <Camera />
+            Report + screenshot
+          </Button>
           <Button size="lg" disabled={busy} onClick={() => void downloadEverything()} className="gold-glow">
             {busy ? <Loader2 className="animate-spin" /> : <Download />}
             One-click dump everything
@@ -407,14 +499,16 @@ export function Workbench({
 
         {/* OVERVIEW */}
         <TabsContent value="overview" className="flex flex-col gap-4">
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
             {stats.map((s) => (
               <div key={s.label} className="rounded-lg border border-border/70 bg-card/50 p-3">
                 <s.icon className="size-4 text-primary" />
                 <p className="mt-2 text-[11px] uppercase tracking-wider text-muted-foreground">
                   {s.label}
                 </p>
-                <p className="truncate font-mono text-sm">{s.value}</p>
+                <p className="truncate font-mono text-sm" title={s.value}>
+                  {s.value}
+                </p>
               </div>
             ))}
           </div>
@@ -422,45 +516,204 @@ export function Workbench({
           <div className="grid gap-4 lg:grid-cols-2">
             <Card className="border-border/70 shadow-none">
               <CardHeader>
-                <CardTitle className="font-display text-base">Header table</CardTitle>
+                <CardTitle className="flex items-center gap-2 font-display text-base">
+                  <Info className="size-4 text-primary" />
+                  Container header — every field
+                </CardTitle>
               </CardHeader>
               <CardContent className="space-y-1.5">
-                {lib.fields.map((f) => (
-                  <div key={f.key} className="flex items-baseline justify-between gap-3 border-b border-border/40 pb-1.5 last:border-0">
-                    <span className="font-mono text-xs text-muted-foreground">{f.key}</span>
-                    <span className="truncate font-mono text-xs text-accent">{f.value}</span>
-                  </div>
-                ))}
-                {lib.fields.length === 0 && (
-                  <p className="text-xs text-muted-foreground">No container header recognised.</p>
+                {lib.fields.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No container header was recognised — this may be a raw blob.
+                  </p>
+                ) : (
+                  lib.fields.map((f) => (
+                    <div
+                      key={f.key}
+                      className="flex items-baseline justify-between gap-3 border-b border-border/40 pb-1.5 last:border-0"
+                    >
+                      <span className="font-mono text-xs text-muted-foreground">{f.key}</span>
+                      <span
+                        className="max-w-[65%] truncate font-mono text-xs text-accent"
+                        title={f.value}
+                      >
+                        {f.value}
+                      </span>
+                    </div>
+                  ))
                 )}
               </CardContent>
             </Card>
 
             <Card className="border-border/70 shadow-none">
               <CardHeader>
-                <CardTitle className="font-display text-base">Engine notes</CardTitle>
+                <CardTitle className="flex items-center gap-2 font-display text-base">
+                  <Fingerprint className="size-4 text-primary" />
+                  Fingerprints, entropy &amp; counts
+                </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2 text-xs text-muted-foreground">
-                {lib.notes.map((n, i) => (
+              <CardContent className="space-y-1.5">
+                {[
+                  { k: "file name", v: fileName || "unnamed" },
+                  {
+                    k: "file size",
+                    v: `${lib.bytes.length.toLocaleString()} bytes · ${formatBytes(lib.bytes.length)}`,
+                  },
+                  { k: "endianness", v: lib.endian },
+                  { k: "bits", v: `${lib.bits}-bit` },
+                  { k: "CRC-32", v: forensics ? `0x${hexPad(forensics.crc, 8).toUpperCase()}` : "computing…" },
+                  { k: "FNV-1a 32", v: forensics ? `0x${hexPad(forensics.fnv, 8).toUpperCase()}` : "computing…" },
+                  { k: "SHA-256", v: sha256 ? sha256.toUpperCase() : "computing…" },
+                  {
+                    k: "entropy",
+                    v: forensics ? `${forensics.entropy.toFixed(3)} bits/byte` : "computing…",
+                  },
+                  {
+                    k: "strings ≥ 4 chars",
+                    v: forensics ? forensics.strings.length.toLocaleString() : "computing…",
+                  },
+                  { k: "segments / sections", v: `${lib.segments.length} / ${lib.sections.length}` },
+                  { k: "symbols", v: lib.symbols.length.toLocaleString() },
+                  { k: "imports / exports", v: `${lib.imports.length} / ${lib.exports.length}` },
+                ].map((r) => (
+                  <div
+                    key={r.k}
+                    className="flex items-baseline justify-between gap-3 border-b border-border/40 pb-1.5 last:border-0"
+                  >
+                    <span className="font-mono text-xs text-muted-foreground">{r.k}</span>
+                    <span
+                      className="max-w-[65%] truncate font-mono text-xs text-accent"
+                      title={r.v}
+                    >
+                      {r.v}
+                    </span>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className="border-border/70 shadow-none">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 font-display text-base">
+                  <Download className="size-4 text-primary" />
+                  Imports
+                  <span className="font-mono text-xs text-muted-foreground">
+                    ({lib.imports.length})
+                  </span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-1.5">
+                {lib.imports.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    This container declares no imported symbols.
+                  </p>
+                ) : (
+                  lib.imports.slice(0, 120).map((name, i) => (
+                    <Badge key={`${name}-${i}`} variant="outline" className="font-mono text-[10px]">
+                      {name}
+                    </Badge>
+                  ))
+                )}
+                {lib.imports.length > 120 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    + {lib.imports.length - 120} more…
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/70 shadow-none">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 font-display text-base">
+                  <Sparkles className="size-4 text-primary" />
+                  Exports
+                  <span className="font-mono text-xs text-muted-foreground">
+                    ({lib.exports.length})
+                  </span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-1.5">
+                {lib.exports.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No exported symbols were found in this container.
+                  </p>
+                ) : (
+                  lib.exports.slice(0, 120).map((name, i) => (
+                    <Badge key={`${name}-${i}`} variant="secondary" className="font-mono text-[10px]">
+                      {name}
+                    </Badge>
+                  ))
+                )}
+                {lib.exports.length > 120 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    + {lib.exports.length - 120} more…
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card className="border-border/70 shadow-none">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 font-display text-base">
+                <ShieldCheck className="size-4 text-primary" />
+                Parser detail
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-xs text-muted-foreground">
+              {lib.notes.length === 0 ? (
+                <p className="flex gap-2">
+                  <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                  Container parsed cleanly — no anomalies reported.
+                </p>
+              ) : (
+                lib.notes.map((n, i) => (
                   <p key={i} className="flex gap-2">
                     <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-primary" />
                     {n}
                   </p>
-                ))}
-                <p className="flex gap-2">
-                  <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-primary" />
-                  Imports {lib.imports.length} · exports {lib.exports.length} · strings are harvested on
-                  demand from raw bytes.
-                </p>
-                <div className="pt-2">
-                  <pre className="terminal-scroll max-h-40 overflow-auto rounded-md border border-border/60 bg-background/60 p-2 font-mono text-[10px] leading-4">
+                ))
+              )}
+
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div>
+                  <p className="mb-1 text-[11px] uppercase tracking-wider">first 256 bytes</p>
+                  <pre className="terminal-scroll max-h-44 overflow-auto rounded-md border border-border/60 bg-background/60 p-2 font-mono text-[10px] leading-4">
                     {bytesToHexDumpPreview(lib.bytes, 256)}
                   </pre>
                 </div>
-              </CardContent>
-            </Card>
-          </div>
+                <div>
+                  <p className="mb-1 text-[11px] uppercase tracking-wider">last 128 bytes</p>
+                  <pre className="terminal-scroll max-h-44 overflow-auto rounded-md border border-border/60 bg-background/60 p-2 font-mono text-[10px] leading-4">
+                    {bytesToHexDumpTail(lib.bytes, 128)}
+                  </pre>
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-1 text-[11px] uppercase tracking-wider">
+                  harvested strings (first 60 of{" "}
+                  {forensics ? forensics.strings.length.toLocaleString() : "…"})
+                </p>
+                <div className="terminal-scroll max-h-52 overflow-auto rounded-md border border-border/60 bg-background/60 p-2">
+                  {(forensics?.strings ?? []).slice(0, 60).map((s, i) => (
+                    <div
+                      key={`${s.offset}-${i}`}
+                      className="flex gap-2 font-mono text-[10px] leading-4"
+                    >
+                      <span className="shrink-0 text-muted-foreground/70">{hex(s.offset)}</span>
+                      <span className="min-w-0 truncate text-foreground/85">{s.value}</span>
+                    </div>
+                  ))}
+                  {forensics && forensics.strings.length === 0 && (
+                    <p className="text-[11px]">No printable strings of 4+ characters were found.</p>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* SECTIONS */}
@@ -774,22 +1027,10 @@ export function Workbench({
                 />
                 <ToggleRow label="Sections" checked={includeSections} onChange={setIncludeSections} />
                 <ToggleRow label="Symbol table" checked={includeSymbols} onChange={setIncludeSymbols} />
-                {hasBackend ? (
-                  <ToggleRow
-                    label="Auto-send feedback to the owner"
-                    checked={autoFeedback}
-                    onChange={onAutoFeedbackChange}
-                  />
-                ) : (
-                  <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <WifiOff className="size-3.5 text-primary" />
-                    Owner alerts unlock once a backend is connected
-                  </span>
-                )}
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <Button onClick={() => download(format, patches.length ? "patch" : "download")}>
+                <Button onClick={() => download(format)}>
                   <Download />
                   Download selected format
                 </Button>
@@ -807,10 +1048,11 @@ export function Workbench({
 
               <div className="rounded-lg border border-border/60 bg-background/50 p-3">
                 <p className="font-mono text-[11px] leading-5 text-muted-foreground">
-                  Every export is stamped with{" "}
+                  Every export opens with the LUCKY HUB drop-alert banner — lib name, arch, symbol
+                  counts and{" "}
                   <span className="text-primary">{TOOL_NAME}</span> ·{" "}
-                  <span className="text-gold">{OWNER_NAME}</span> · Telegram @LUCKY_HUB_DEV and the
-                  exporting account ({userEmail || "guest"}), so your dumps are always traceable.
+                  <span className="text-gold">{OWNER_NAME}</span> · Telegram @LUCKY_HUB_DEV, plus the
+                  exporting account ({userEmail || "guest"}), so your dumps always carry your credit.
                 </p>
               </div>
             </CardContent>

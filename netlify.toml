@@ -1,10 +1,29 @@
+# Netlify deployment for LUCKY HUB WEB IDA PRO
+#
+# Drag-and-drop or connect the repo at https://app.netlify.com — this file
+# makes Netlify run the Vite build and publish the static bundle in `dist/`.
+#
+# The client only needs one environment variable, set under
+# Site configuration → Environment variables (all environments):
+#   VITE_CONVEX_URL = https://<your-deployment>.convex.cloud
+# Without it the app still builds and runs, but the owner alerts,
+# history and the Telegram DM relay stay disabled.
+
 [build]
   command = "npm run build"
   publish = "dist"
 
-# Single-page-app fallback: every unknown path serves index.html so client-side
-# routing (/tool, /dashboard, ...) works on refresh and on deep links.
+[build.environment]
+  NODE_VERSION = "20"
+
+# Single-page app: every unknown path serves index.html so client routing works.
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
