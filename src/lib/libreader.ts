@@ -1732,6 +1732,7 @@ export type ExportFormat =
   | "txt"
   | "json"
   | "header"
+  | "c"
   | "idc"
   | "aob"
   | "table";
@@ -1751,6 +1752,7 @@ export const EXPORT_FORMATS: { id: ExportFormat; label: string; ext: string; mim
   { id: "txt", label: "IDA listing", ext: "txt", mime: "text/plain", hint: "Human-readable segment / section / symbol dump" },
   { id: "json", label: "JSON", ext: "json", mime: "application/json", hint: "Structured dump for your own scripts" },
   { id: "header", label: "C / C++ header", ext: "h", mime: "text/plain", hint: "#define offsets + symbol table" },
+  { id: "c", label: "Hex-Rays style C", ext: "c", mime: "text/plain", hint: "IDA-style .c declaration listing with the drop-alert banner" },
   { id: "idc", label: "IDA script (.idc)", ext: "idc", mime: "text/plain", hint: "Auto-rename + comment every symbol in IDA" },
   { id: "aob", label: "AOB signatures", ext: "aob", mime: "text/plain", hint: "Byte signatures per function for memory scanners" },
   { id: "table", label: "Offset table", ext: "csv", mime: "text/csv", hint: "name,address,offset,size — spreadsheet friendly" },
@@ -1798,6 +1800,13 @@ function dropAlert(
 /** Wraps banner lines in a single C-style comment block, escaping nested end markers. */
 function cComment(lines: string[]): string[] {
   return ["/*", ...lines.map((l) => l.replace(/\*\//g, "* /")), "*/"];
+}
+
+/** Sanitizes a symbol name into a valid C identifier, preserving case. */
+function cName(value: string): string {
+  const cleaned = value.replace(/[^A-Za-z0-9_]/g, "_").replace(/^_+/, "");
+  if (!cleaned) return "sym_unknown";
+  return /^[0-9]/.test(cleaned) ? `sym_${cleaned}` : cleaned;
 }
 
 /** Enriched options carrying the parsed lib and the resolved output file name. */
@@ -1858,6 +1867,73 @@ export function exportDump(lib: ParsedLib, inputOpts: ExportOptions): { fileName
       },
     };
     return { fileName: baseName, content: JSON.stringify(payload, null, 2), mime: spec.mime };
+  }
+
+  if (opts.format === "c") {
+    const lines: string[] = [];
+    lines.push(...cComment(dropAlert(lib, { ...opts, outputName: baseName })));
+    lines.push("");
+    lines.push("#include <defs.h>");
+    lines.push("");
+    lines.push("#include <stdarg.h>");
+    lines.push("");
+    lines.push("");
+
+    const declType = (s: LibSymbol): string => {
+      if (s.kind === "FUNC") return "__int64 __fastcall";
+      switch (s.size) {
+        case 1:
+          return "char";
+        case 2:
+          return "__int16";
+        case 4:
+          return "int";
+        case 8:
+          return "__int64";
+        case 16:
+          return "__int128";
+        default:
+          return s.size > 0 ? "_UNKNOWN" : "void";
+      }
+    };
+    const declLine = (s: LibSymbol, isFunc: boolean) =>
+      `${declType(s)} ${cName(nameOf(s))}${isFunc ? "()" : ""};  // ${hex(s.value)} · ${
+        s.section || "?"
+      } · ${hex(s.size)}`;
+
+    const funcs = lib.symbols.filter((s) => s.kind === "FUNC");
+    const data = lib.symbols.filter((s) => s.kind !== "FUNC");
+
+    lines.push("//-------------------------------------------------------------------------");
+    lines.push("// Function declarations");
+    lines.push("");
+    if (!opts.includeSymbols) {
+      lines.push("// Symbol table excluded from this export.");
+    } else if (funcs.length === 0) {
+      lines.push("// No function symbols were found in this library.");
+    } else {
+      for (const s of funcs.slice(0, 4000)) lines.push(declLine(s, true));
+      if (funcs.length > 4000) lines.push(`// … ${funcs.length - 4000} more function symbols omitted.`);
+    }
+    lines.push("");
+
+    lines.push("//-------------------------------------------------------------------------");
+    lines.push("// Data declarations");
+    lines.push("");
+    if (!opts.includeSymbols) {
+      lines.push("// Symbol table excluded from this export.");
+    } else if (data.length === 0) {
+      lines.push("// No data symbols were found in this library.");
+    } else {
+      for (const s of data.slice(0, 4000)) lines.push(declLine(s, false));
+      if (data.length > 4000) lines.push(`// … ${data.length - 4000} more data symbols omitted.`);
+    }
+    lines.push("");
+    lines.push(`// ${TOOL_NAME} · ${OWNER_NAME} · ${TELEGRAM_CHANNEL}`);
+    lines.push(
+      "// Declaration skeleton generated offline from the symbol table — this tool lists names, addresses and sizes, it does not decompile bodies.",
+    );
+    return { fileName: baseName, content: lines.join("\n"), mime: spec.mime };
   }
 
   if (opts.format === "header") {
